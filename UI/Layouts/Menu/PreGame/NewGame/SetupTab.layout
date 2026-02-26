@@ -1,0 +1,105 @@
+FrameWidgetClass {
+ Name "SetupTab"
+ components {
+  JWK_NewGameSetupUIComponent "{6506D1B0BAE1D572}" {
+  }
+ }
+ {
+  VerticalLayoutWidgetClass "{6506D1BE17825BF2}" {
+   Name "VerticalLayout0"
+   Slot FrameWidgetSlot "{644B0E1EFC2EB22C}" {
+    Anchor 0 0 1 1
+    PositionX 0
+    OffsetLeft 0
+    PositionY 0
+    OffsetTop 0
+    SizeX -700
+    OffsetRight 0
+    SizeY -270
+    OffsetBottom 0
+    SizeToContent 1
+   }
+   {
+    ButtonWidgetClass "{6506D1BE17825BDB}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+     Name "PlayerFaction"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+       m_sLabel "#JWK-NewGameUI-PlayerFaction"
+      }
+     }
+    }
+    ButtonWidgetClass "{6506D1BE17825BD3}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+     Name "EnemyFaction"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+       m_sLabel "#JWK-NewGameUI-EnemyFaction"
+      }
+     }
+    }
+    ButtonWidgetClass "{AA06D1BE17825BD3}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+     Name "InvaderFaction"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+       m_sLabel "Invader Faction"
+      }
+     }
+    }
+    ButtonWidgetClass "{6506D1BE17825BD7}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+     Name "SupportingFaction"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+       m_sLabel "#JWK-NewGameUI-SupportingFaction"
+      }
+     }
+    }
+    ButtonWidgetClass "{6506D1BE17825BCB}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+     Name "AmbientFaction"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+       m_sLabel "#JWK-NewGameUI-AmbientFaction"
+      }
+     }
+    }
+    ButtonWidgetClass "{6506D1BCA8A97D44}" : "{0022F0B45ADBC5AC}UI/layouts/WidgetLibrary/EditBox/WLib_EditBox.layout" {
+     Name "MoneyFormat"
+     Slot LayoutSlot "{6506D1BCA8A97DFB}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_EditBoxComponent "{547290FFBD5B33E9}" {
+       m_sLabel "#JWK-NewGameUI-MoneyFormat"
+       m_sWarningText "#JWK-NewGameUI-MoneyFormatWarning"
+      }
+      JWK_MoneyFormatEditBoxComponent "{6506D1B4709331F1}" {
+      }
+     }
+    }
+   }
+  }
+  VerticalLayoutWidgetClass "{6506D1BE17825BF2}" {
+   Prefab "{6506D1BE17825BF2}"
+   "Is Visible" 0
+  }
+ }
+}
