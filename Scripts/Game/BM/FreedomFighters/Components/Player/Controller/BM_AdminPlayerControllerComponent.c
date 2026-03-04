@@ -2,6 +2,7 @@ modded class JWK_FactionManager
 {
 	bool BM_LoadFaction(string factionKey)
 	{
+		if (!m_aFactions) m_aFactions = {};
 		if (GetJWKFaction(factionKey)) return true;
 
 		JWK_FactionConfig config = GetFactionConfig(factionKey);

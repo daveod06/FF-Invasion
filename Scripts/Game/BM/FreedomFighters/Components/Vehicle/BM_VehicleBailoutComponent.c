@@ -30,7 +30,7 @@ class BM_VehicleBailoutComponent : ScriptComponent
 		if (m_bHasBailed)
 			return;
 
-		// Bailout if the vehicle is destroyed or heavily damaged
+		// Bailout if the vehicle is ruined or heavily damaged
 		if (state == EDamageState.DESTROYED)
 		{
 			m_bHasBailed = true;

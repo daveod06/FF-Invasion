@@ -1,8 +1,12 @@
 modded class JWK_GameModeSaveData
 {
 	bool m_bBM_InvasionTriggered;
+	bool m_bBM_InvaderHadBase;
+	bool m_bBM_InvasionDefeated;
 	string m_sBM_InvaderFactionKey;
 	float m_fBM_LastExpansionTime;
+	int m_iBM_CurrentTargetWaveCount;
+	EntityID m_iBM_LastFailedTargetID = EntityID.INVALID;
 	ref array<string> m_aInvaderGroupPrefabs = {};
 	ref array<vector> m_aInvaderGroupPositions = {};
 
@@ -12,8 +16,12 @@ modded class JWK_GameModeSaveData
 			return false;
 
 		saveContext.WriteValue("m_bBM_InvasionTriggered", m_bBM_InvasionTriggered);
+		saveContext.WriteValue("m_bBM_InvaderHadBase", m_bBM_InvaderHadBase);
+		saveContext.WriteValue("m_bBM_InvasionDefeated", m_bBM_InvasionDefeated);
 		saveContext.WriteValue("m_sBM_InvaderFactionKey", m_sBM_InvaderFactionKey);
 		saveContext.WriteValue("m_fBM_LastExpansionTime", m_fBM_LastExpansionTime);
+		saveContext.WriteValue("m_iBM_CurrentTargetWaveCount", m_iBM_CurrentTargetWaveCount);
+		saveContext.WriteValue("m_iBM_LastFailedTargetID", m_iBM_LastFailedTargetID);
 		
 		// Manual Array Serialization for Unit GPS and Prefabs
 		int countPrefabs = m_aInvaderGroupPrefabs.Count();
@@ -45,8 +53,12 @@ modded class JWK_GameModeSaveData
 			return false;
 
 		loadContext.ReadValue("m_bBM_InvasionTriggered", m_bBM_InvasionTriggered);
+		loadContext.ReadValue("m_bBM_InvaderHadBase", m_bBM_InvaderHadBase);
+		loadContext.ReadValue("m_bBM_InvasionDefeated", m_bBM_InvasionDefeated);
 		loadContext.ReadValue("m_sBM_InvaderFactionKey", m_sBM_InvaderFactionKey);
 		loadContext.ReadValue("m_fBM_LastExpansionTime", m_fBM_LastExpansionTime);
+		loadContext.ReadValue("m_iBM_CurrentTargetWaveCount", m_iBM_CurrentTargetWaveCount);
+		loadContext.ReadValue("m_iBM_LastFailedTargetID", m_iBM_LastFailedTargetID);
 		
 		if (!m_aInvaderGroupPrefabs)
 			m_aInvaderGroupPrefabs = new array<string>();

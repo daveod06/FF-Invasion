@@ -141,8 +141,6 @@ modded class JWK_BattleSubjectComponent
 {
 	override bool CheckAutostartCondition_S()
 	{
-		// BM_GC_FIX: Prevent automatic battle re-triggering if the location is currently held by Invaders...
-		// UNLESS a player is actually present to initiate the fight!
 		if (GetOwner()) {
 			JWK_FactionControlComponent facControl = JWK_CompTU<JWK_FactionControlComponent>.FindIn(GetOwner());
 			if (facControl) {
@@ -151,26 +149,41 @@ modded class JWK_BattleSubjectComponent
 				JWK_GameMode gm = JWK_GameMode.Cast(GetGame().GetGameMode());
 				if (gm) invaderKey = gm.BM_GetInvaderFactionKey();
 				
-				if (!invaderKey.IsEmpty() && currentFaction && currentFaction.GetFactionKey() == invaderKey) {
-					// Check for physical players in the area
-					array<int> playerIds = {};
-					GetGame().GetPlayerManager().GetPlayers(playerIds);
-					bool playerFound = false;
-					foreach (int id : playerIds)
-					{
-						IEntity playerEnt = GetGame().GetPlayerManager().GetPlayerControlledEntity(id);
-						if (playerEnt && vector.Distance(playerEnt.GetOrigin(), GetOwner().GetOrigin()) < 300)
+				if (!invaderKey.IsEmpty() && currentFaction) {
+					// 1. If base is held by Invaders: Suppress battle unless player is near
+					if (currentFaction.GetFactionKey() == invaderKey) {
+						array<int> playerIds = {};
+						GetGame().GetPlayerManager().GetPlayers(playerIds);
+						bool playerFound = false;
+						foreach (int id : playerIds)
 						{
-							playerFound = true;
-							break;
+							IEntity playerEnt = GetGame().GetPlayerManager().GetPlayerControlledEntity(id);
+							if (playerEnt && vector.Distance(playerEnt.GetOrigin(), GetOwner().GetOrigin()) < 300)
+							{
+								playerFound = true;
+								break;
+							}
+						}
+
+						// If a player is here, let the battle start so they can recapture it!
+						if (playerFound) return super.CheckAutostartCondition_S();
+
+						// Otherwise, keep it quiet to prevent AI vs AI loops
+						return false;
+					}
+					
+					// 2. NEW LOGIC: If base is held by Players/Rebels, check if Invaders are attacking it!
+					// Native FF framework prevents battles from autostarting on player-owned bases. We must bypass this!
+					if (currentFaction == JWK.GetFactions().GetPlayerFaction() || currentFaction == JWK.GetFactions().GetEnemyFaction()) {
+						JWK_AIForce invaderForce = gm.BM_GetInvaderForce();
+						if (invaderForce) {
+							int invaderCount = JWK_AIUtils.GetAIForceAgentsCountInArea(invaderForce, GetOwner().GetOrigin(), 150);
+							if (invaderCount > 0) {
+								Print("BM_Invasion: Autostarting Battle! Invader forces detected inside " + GetOwner().GetPrefabData().GetPrefabName(), LogLevel.NORMAL);
+								return true;
+							}
 						}
 					}
-
-					// If a player is here, let the battle start so they can recapture it!
-					if (playerFound) return super.CheckAutostartCondition_S();
-
-					// Otherwise, keep it quiet to prevent AI vs AI loops
-					return false;
 				}
 			}
 		}

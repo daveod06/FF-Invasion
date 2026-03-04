@@ -2,32 +2,40 @@ modded class JWK_GameMode
 {
 	[Attribute(defvalue: "0", desc: "How many zones players must capture before the invasion triggers.", category: "BakerMods: Invasion")]
 	protected int m_iBM_ZonesForInvasion;
-	
+
+	[Attribute(defvalue: "4", desc: "Maximum number of bases the Invaders will hold at once before stopping their expansion.", category: "BakerMods: Invasion")]
+	protected int m_iBM_MaxInvaderBases;
+
 	[Attribute(defvalue: "6", desc: "Base number of infantry groups spawned per invasion wave.", category: "BakerMods: Invasion")]
 	protected int m_iBM_BaseInfantryGroups;
-	
+
 	[Attribute(defvalue: "3", desc: "Base number of vehicles spawned per invasion wave.", category: "BakerMods: Invasion")]
 	protected int m_iBM_BaseVehicles;
-	
-	[Attribute(defvalue: "2", desc: "How many extra infantry groups to spawn per human player.", category: "BakerMods: Invasion")]
+
+	[Attribute(defvalue: "0", desc: "How many extra infantry groups to spawn per human player.", category: "BakerMods: Invasion")]
 	protected int m_iBM_InfantryPerPlayer;
-	
-	[Attribute(defvalue: "2", desc: "How many extra vehicles to spawn per human player.", category: "BakerMods: Invasion")]
+
+	[Attribute(defvalue: "0", desc: "How many extra vehicles to spawn per human player.", category: "BakerMods: Invasion")]
 	protected int m_iBM_VehiclesPerPlayer;
 
 	[Attribute(defvalue: "50", desc: "Maximum number of active Invader AI agents allowed before stopping new spawns.", category: "BakerMods: Invasion")]
 	protected int m_iBM_MaxActiveAI;
 
 	protected bool m_bBM_InvasionTriggered;
-	protected string m_sBM_InvaderFactionKey = "None";
-	
+	protected bool m_bBM_InvaderHadBase;
+	protected bool m_bBM_InvasionDefeated;
+	protected string m_sBM_InvaderFactionKey = "None";	
 	protected float m_fBM_LastExpansionTime;
 	protected static const float BM_EXPANSION_INTERVAL = 300000; 
 	
 	protected EntityID m_iBM_CurrentTargetID;
+	protected int m_iBM_CurrentTargetWaveCount;
+	protected EntityID m_iBM_LastFailedTargetID = EntityID.INVALID;
 	EntityID BM_GetCurrentTargetID() { return m_iBM_CurrentTargetID; }
 	protected float m_fBM_LastReinforcementTime;
 	protected float m_fBM_LastRoamingTime;
+	protected float m_fBM_LastSynchronizedPatrolTime;
+	protected float m_fBM_LastReassessmentTime;
 	protected bool m_bBM_IntelNotified;
 	protected float m_fBM_CurrentCooldown;
 	protected float m_fBM_LastCasualtyCheck;
@@ -65,13 +73,15 @@ modded class JWK_GameMode
 		bool isSpecialized = resLower.Contains("command") || resLower.Contains("construction") || resLower.Contains("builder") || resLower.Contains("crane");
 		bool isMedical = resLower.Contains("medic") || resLower.Contains("ambulance");
 		bool isSupport = resLower.Contains("tanker") || resLower.Contains("logistics") || resLower.Contains("maintenance") || resLower.Contains("workshop");
-		bool isAirOrBase = resLower.Contains("helicopter") || resLower.Contains("heli") || resLower.Contains("_base") || resLower.Contains("core");
+		
+		// STRICT RULE: No Helicopters or Aircraft
+		bool isAirOrBase = resLower.Contains("helicopter") || resLower.Contains("heli") || resLower.Contains("plane") || resLower.Contains("air") || resLower.Contains("_base") || resLower.Contains("core");
+		
+		// STRICT RULE: No Trucks (Ural, M923, Zil, GAZ, etc.)
+		bool isTruck = resLower.Contains("truck") || resLower.Contains("ural") || resLower.Contains("m923") || resLower.Contains("m35") || resLower.Contains("zil") || resLower.Contains("gaz") || resLower.Contains("van");
 
-		if (isLogistical || isSpecialized || isMedical || isSupport || isAirOrBase) 
+		if (isLogistical || isSpecialized || isMedical || isSupport || isAirOrBase || isTruck) 
 		{
-			// SPECIAL CASE: Always allow actual Transport trucks
-			if (resLower.Contains("transport")) return true;
-			
 			return false;
 		}
 
@@ -151,6 +161,19 @@ modded class JWK_GameMode
 		}
 	}
 
+	protected bool BM_IsPlayerNearby(vector pos, float radius)
+	{
+		array<int> players = {};
+		GetGame().GetPlayerManager().GetPlayers(players);
+		float radiusSq = radius * radius;
+		foreach (int playerId : players)
+		{
+			IEntity playerEnt = GetGame().GetPlayerManager().GetPlayerControlledEntity(playerId);
+			if (playerEnt && vector.DistanceSqXZ(playerEnt.GetOrigin(), pos) < radiusSq) return true;
+		}
+		return false;
+	}
+
 	protected void BM_UpdateProtectedGC()
 	{
 		if (!m_aBM_ProtectedFromGC) return;
@@ -166,15 +189,44 @@ modded class JWK_GameMode
 			}
 			
 			bool shouldClean = false;
+			bool isDestroyed = false;
 			
 			SCR_ChimeraCharacter character = SCR_ChimeraCharacter.Cast(ent);
 			if (character) {
 				DamageManagerComponent dmg = character.GetDamageManager();
-				if (dmg && dmg.IsDestroyed()) shouldClean = true;
+				if (dmg && dmg.GetState() == EDamageState.DESTROYED) {
+					shouldClean = true;
+					isDestroyed = true;
+				}
 			}
 			else if (ent.IsInherited(Vehicle)) {
 				DamageManagerComponent dmg = DamageManagerComponent.Cast(ent.FindComponent(DamageManagerComponent));
-				if (dmg && dmg.IsDestroyed()) shouldClean = true;
+				if (dmg && dmg.GetState() == EDamageState.DESTROYED) {
+					shouldClean = true;
+					isDestroyed = true;
+				} else {
+					SCR_BaseCompartmentManagerComponent compMgr = SCR_BaseCompartmentManagerComponent.Cast(ent.FindComponent(SCR_BaseCompartmentManagerComponent));
+					bool hasAliveOccupants = false;
+					if (compMgr) {
+						array<IEntity> occupants = {};
+						compMgr.GetOccupants(occupants);
+						foreach (IEntity occ : occupants) {
+							DamageManagerComponent occDmg = DamageManagerComponent.Cast(occ.FindComponent(DamageManagerComponent));
+							if (occDmg && occDmg.GetState() != EDamageState.DESTROYED) {
+								hasAliveOccupants = true;
+								break;
+							}
+						}
+					}
+					
+					if (!hasAliveOccupants) {
+						SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(ent);
+						// Never clean player-faction vehicles (safety)
+						if (!fac || !fac.GetAffiliatedFaction() || fac.GetAffiliatedFaction().GetFactionKey() != JWK.GetGameConfig().GetPlayerFactionKey()) {
+							shouldClean = true;
+						}
+					}
+				}
 			}
 			else if (ent.IsInherited(SCR_AIGroup)) {
 				SCR_AIGroup grp = SCR_AIGroup.Cast(ent);
@@ -182,7 +234,25 @@ modded class JWK_GameMode
 			}
 			
 			if (shouldClean) {
-				gcManager.Insert(ent);
+				// SMART CLEANUP: Distance check to avoid things "poofing" in front of players
+				float safetyRadius = 150; // Standard for bodies/wrecks
+				if (ent.IsInherited(Vehicle) && !isDestroyed) safetyRadius = 400; // Larger for functional abandoned cars
+
+				if (BM_IsPlayerNearby(ent.GetOrigin(), safetyRadius)) continue;
+
+				// If we are here, it's safe to remove. 
+				// We use direct deletion if far enough, or re-insert into GC with aggressive settings if near-ish.
+				if (!BM_IsPlayerNearby(ent.GetOrigin(), 600))
+				{
+					SCR_EntityHelper.DeleteEntityAndChildren(ent);
+					Print("BM_Invasion: Smart GC: Deleted abandoned/destroyed entity " + ent.ToString(), LogLevel.NORMAL);
+				}
+				else
+				{
+					// Near players but outside safety radius, hand back to GC but with a very high priority
+					gcManager.Insert(ent, 15, 50); 
+				}
+				
 				m_aBM_ProtectedFromGC.Remove(i);
 			}
 		}
@@ -198,6 +268,8 @@ modded class JWK_GameMode
 
 		if (!m_bBM_InvasionTriggered)
 		{
+			if (m_bBM_InvasionDefeated) return; // PERMANENT DEFEAT: Do not trigger again.
+
 			int playerZones = 0;
 			array<EntityID> outIds = {};
 			
@@ -221,36 +293,186 @@ modded class JWK_GameMode
 
 			float currentTime = GetGame().GetWorld().GetWorldTime();
 			
-			// --- Reinforcements Check Every 2 Mins ---
+			// --- Active Re-assessment Every 1 Min ---
+			if (currentTime - m_fBM_LastReassessmentTime > 60000)
+			{
+				m_fBM_LastReassessmentTime = currentTime;
+				BM_ReassessInvaderOrders();
+				
+				// --- BAKERMODS: DEFENDER WIN CONDITION ---
+				if (m_iBM_CurrentTargetID != EntityID.INVALID) {
+					IEntity currentTargetEnt = GetGame().GetWorld().FindEntityByID(m_iBM_CurrentTargetID);
+					if (currentTargetEnt) {
+						SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(currentTargetEnt);
+						if (fac && fac.GetAffiliatedFactionKey() == JWK.GetGameConfig().GetPlayerFactionKey()) {
+							if (m_iBM_CurrentTargetWaveCount >= 3) {
+								int activeInvadersAtTarget = 0;
+								if (m_InvaderForce) activeInvadersAtTarget = JWK_AIUtils.GetAIForceAgentsCountInArea(m_InvaderForce, currentTargetEnt.GetOrigin(), 400);
+								
+								if (activeInvadersAtTarget == 0) {
+									// DEFENDERS WON!
+									m_iBM_LastFailedTargetID = m_iBM_CurrentTargetID;
+									m_iBM_CurrentTargetID = EntityID.INVALID;
+									m_iBM_CurrentTargetWaveCount = 0;
+									m_fBM_CurrentCooldown = 3600000; // 1 Hour cooldown
+									
+									// Force battle win for players
+									JWK_BattleSubjectComponent battleSubj = JWK_CompTU<JWK_BattleSubjectComponent>.FindIn(currentTargetEnt);
+									if (battleSubj && JWK.GetBattleManager()) {
+										JWK_BattleControllerEntity ctrl = JWK.GetBattleManager().GetController();
+										if (ctrl && ctrl.GetSubject_S() == battleSubj) {
+											int playerFactionId = GetGame().GetFactionManager().GetFactionIndex(GetGame().GetFactionManager().GetFactionByKey(JWK.GetGameConfig().GetPlayerFactionKey()));
+											ctrl.ForceFinish_S(playerFactionId);
+										}
+									}
+									
+									string tName = "the objective";
+									JWK_NamedLocationComponent tLoc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(currentTargetEnt);
+									if (tLoc) tName = tLoc.GetName();
+									
+									string msgWin = "VICTORY: The local resistance has successfully defended " + tName + " against all invader waves!";
+									JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msgWin);
+									Print("BM_Invasion: Defenders successfully held " + currentTargetEnt.GetPrefabData().GetPrefabName() + " after 3 waves. Forcing 1-hour delay.", LogLevel.NORMAL);
+								}
+							}
+						}
+					}
+				}
+				
+				// --- WIN/LOSS CONDITION CHECK ---
+				SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
+				if (invaderFaction)
+				{
+					int currentBases = 0;
+					array<EntityID> outIds = {};
+					outIds.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_MilitaryBaseEntity));
+					outIds.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_FactoryEntity));
+					outIds.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_AirportEntity));
+					
+					foreach (EntityID id : outIds) {
+						IEntity ent = GetGame().GetWorld().FindEntityByID(id);
+						SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(ent);
+						if (fac && fac.GetAffiliatedFaction() == invaderFaction) currentBases++;
+					}
+					
+					// If they hold at least one base, they have successfully established a presence
+					if (currentBases > 0) m_bBM_InvaderHadBase = true;
+					
+					// If they HAD a presence but now have 0 bases, they are defeated
+					if (m_bBM_InvaderHadBase && currentBases == 0)
+					{
+						m_bBM_InvasionTriggered = false;
+						m_bBM_InvasionDefeated = true; // NEW: Lock them out permanently!
+						m_iBM_CurrentTargetID = EntityID.INVALID;
+						
+						string msg = "VICTORY: The " + invaderFaction.GetFactionName() + " invasion has been completely repelled! The sector is secure once again.";
+						JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
+						
+						Print("BM_Invasion: Invasion DEFEATED and permanently deactivated.", LogLevel.NORMAL);
+						return; // Stop processing further to allow the defeat to stick
+					}
+				}
+			}
+			// ------------------------------------------
+			
+			// --- Reinforcements & Target Check Every 2 Mins ---
 			if (currentTime - m_fBM_LastReinforcementTime > 120000)
 			{
 				m_fBM_LastReinforcementTime = currentTime;
 				
-				// Send reinforcements if we have an active target and are low on troops
-				int currentAI = 0;
-				if (m_InvaderForce) currentAI = m_InvaderForce.CountAgents();
-				
-				if (currentAI < (m_iBM_MaxActiveAI * 0.5) && m_iBM_CurrentTargetID != EntityID.INVALID)
+				SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
+				if (invaderFaction)
 				{
-					IEntity currentTargetEnt = GetGame().GetWorld().FindEntityByID(m_iBM_CurrentTargetID);
-					if (currentTargetEnt)
+					if (m_iBM_CurrentTargetID != EntityID.INVALID)
 					{
-						SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(currentTargetEnt);
-						if (fac && fac.GetAffiliatedFactionKey() != m_sBM_InvaderFactionKey)
+						IEntity currentTargetEnt = GetGame().GetWorld().FindEntityByID(m_iBM_CurrentTargetID);
+						if (currentTargetEnt)
 						{
-							SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
-							if (invaderFaction) {
-								Print("BM_Invasion: Reinforcing attack on " + currentTargetEnt.GetPrefabData().GetPrefabName(), LogLevel.NORMAL);
-								IEntity sourceBase = BM_FindInvaderHeldBase(invaderFaction);
-								vector sourcePos = "0 0 0";
-								if (sourceBase) sourcePos = sourceBase.GetOrigin();
-								BM_SpawnInvasionForce(currentTargetEnt.GetOrigin(), invaderFaction, sourcePos);
+							SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(currentTargetEnt);
+							if (fac && fac.GetAffiliatedFactionKey() != m_sBM_InvaderFactionKey)
+							{
+								int currentAI = 0;
+								if (m_InvaderForce) currentAI = m_InvaderForce.CountAgents();
+								
+								if (currentAI < (m_iBM_MaxActiveAI * 0.5))
+								{
+									bool isPlayerBase = (fac.GetAffiliatedFactionKey() == JWK.GetGameConfig().GetPlayerFactionKey());
+									if (isPlayerBase && m_iBM_CurrentTargetWaveCount >= 3) {
+										Print("BM_Invasion: Max waves (3) reached. Halting reinforcements to player base.", LogLevel.NORMAL);
+									} else {
+										if (isPlayerBase) m_iBM_CurrentTargetWaveCount++;
+										
+										string name = "the objective";
+										JWK_NamedLocationComponent loc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(currentTargetEnt);
+										if (loc) name = loc.GetName();
+										
+										string msg = "REBEL INTEL: Additional " + invaderFaction.GetFactionName() + " units have been sighted moving to reinforce the attack on " + name + ".";
+										JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
+										
+										Print("BM_Invasion: Reinforcing attack on " + currentTargetEnt.GetPrefabData().GetPrefabName() + " (Wave " + m_iBM_CurrentTargetWaveCount + ")", LogLevel.NORMAL);
+										IEntity sourceBase = BM_FindInvaderHeldBase(invaderFaction);
+										vector sourcePos = "0 0 0";
+										if (sourceBase) sourcePos = sourceBase.GetOrigin();
+										BM_SpawnInvasionForce(currentTargetEnt.GetOrigin(), invaderFaction, sourcePos);
+									}
+								}
+							}
+							else
+							{
+								m_iBM_CurrentTargetID = EntityID.INVALID;
 							}
 						}
 						else
 						{
-							// Target was captured, clear it
 							m_iBM_CurrentTargetID = EntityID.INVALID;
+						}
+					}
+					
+					// If target was cleared, try to find a new one immediately so reassessment can pick it up
+					if (m_iBM_CurrentTargetID == EntityID.INVALID)
+					{
+						int currentBases = 0;
+						array<EntityID> outIds = {};
+						outIds.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_MilitaryBaseEntity));
+						outIds.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_FactoryEntity));
+						
+						foreach (EntityID id : outIds) {
+							IEntity loopEnt = GetGame().GetWorld().FindEntityByID(id);
+							SCR_FactionAffiliationComponent facCheck = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(loopEnt);
+							if (facCheck && facCheck.GetAffiliatedFaction() == invaderFaction) currentBases++;
+						}
+
+						// NEW LOGIC: Only find a new target if we are under the max limit
+						if (currentBases < m_iBM_MaxInvaderBases) 
+						{
+							IEntity sourceBase = BM_FindInvaderHeldBase(invaderFaction);
+							IEntity target;
+							if (!sourceBase)
+							{
+								SCR_Faction occupierFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(JWK.GetGameConfig().GetEnemyFactionKey()));
+								target = BM_FindInvasionTarget(occupierFaction);
+							}
+							else
+							{
+								target = BM_FindNextExpansionTarget(sourceBase.GetOrigin(), invaderFaction);
+							}
+							
+							if (target) {
+								m_iBM_CurrentTargetID = target.GetID();
+								
+								string tName = "a new sector";
+								JWK_NamedLocationComponent tLoc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(target);
+								if (tLoc) tName = tLoc.GetName();
+								
+								string tMsg = "REBEL INTEL: The " + invaderFaction.GetFactionName() + " forces are re-grouping and pushing towards " + tName + ".";
+								JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, tMsg);
+								
+								Print("BM_Invasion: Objective captured. Re-focusing existing forces on: " + target.GetPrefabData().GetPrefabName(), LogLevel.NORMAL);
+							}
+						} 
+						else 
+						{
+							Print("BM_Invasion: MAX BASES (" + m_iBM_MaxInvaderBases + ") REACHED. Halting expansion, transitioning to defense.", LogLevel.NORMAL);
 						}
 					}
 				}
@@ -263,6 +485,15 @@ modded class JWK_GameMode
 				m_fBM_LastRoamingTime = currentTime;
 				SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
 				if (invaderFaction) BM_SpawnRoamingPatrol(invaderFaction);
+			}
+			// ------------------------------------------
+
+			// --- Synchronized Global Patrol Check Every 12 Mins ---
+			if (currentTime - m_fBM_LastSynchronizedPatrolTime > 720000)
+			{
+				m_fBM_LastSynchronizedPatrolTime = currentTime;
+				SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
+				if (invaderFaction) BM_SpawnSynchronizedPatrols(invaderFaction);
 			}
 			// ------------------------------------------
 
@@ -279,14 +510,24 @@ modded class JWK_GameMode
 					int alive = m_InvaderForce.CountAgents();
 					if (alive < m_iBM_LastAliveCount) {
 						float penalty = (m_iBM_LastAliveCount - alive) * 10000; // 10s extra cooldown per death
-						m_fBM_CurrentCooldown += penalty;
-						Print("BM_Invasion: High casualties detected. Delaying next wave by " + (penalty/1000).ToString() + "s", LogLevel.NORMAL);
+						
+						if (penalty > 60000) {
+							m_fBM_CurrentCooldown = 3600000; // 1 HOUR DELAY
+							SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
+							if (invaderFaction) {
+								string msg = "REBEL INTEL: Heavy losses have forced the " + invaderFaction.GetFactionName() + " command to delay their next offensive for an extended period.";
+								JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
+							}
+							Print("BM_Invasion: High casualties detected. Forcing next wave cooldown to 1 hour.", LogLevel.NORMAL);
+						} else {
+							m_fBM_CurrentCooldown += penalty;
+							Print("BM_Invasion: Casualties detected. Delaying next wave by " + (penalty/1000).ToString() + "s", LogLevel.NORMAL);
+						}
 					}
 					m_iBM_LastAliveCount = alive;
 				}
 
 				// Halt Capture Logic: Limit maximum territory
-				int maxBases = 3 + (GetGame().GetPlayerManager().GetPlayerCount() * 2);
 				int currentBases = 0;
 				SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
 				
@@ -305,8 +546,10 @@ modded class JWK_GameMode
 					}
 				}
 
-				if (currentBases < maxBases) {
+				if (currentBases < m_iBM_MaxInvaderBases) {
 					BM_ExecuteExpansionWave();
+				} else {
+					Print("BM_Invasion: Skipping Expansion Wave (Max Bases Reached). Defending current territory.", LogLevel.NORMAL);
 				}
 				
 				// Utilize FF Patrol System for Invaders
@@ -318,17 +561,28 @@ modded class JWK_GameMode
 				m_bBM_IntelNotified = true;
 				SCR_Faction invaderFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
 				if (invaderFaction) {
-					IEntity sourceBase = BM_FindInvaderHeldBase(invaderFaction);
-					IEntity target = null;
-					if (sourceBase) target = BM_FindNextExpansionTarget(sourceBase.GetOrigin(), invaderFaction);
-					
-					if (target) {
-						JWK_NamedLocationComponent loc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(target);
-						string name = "Unknown";
-						if (loc) name = loc.GetName();
+					int currentBasesCheck = 0;
+					array<EntityID> basesCheck = JWK_IndexSystem.Get().GetAll(JWK_MilitaryBaseEntity);
+					foreach (EntityID id : basesCheck) {
+						IEntity ent = GetGame().GetWorld().FindEntityByID(id);
+						SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(ent);
+						if (fac && fac.GetAffiliatedFaction() == invaderFaction) currentBasesCheck++;
+					}
+
+					// Only notify if they are still expanding
+					if (currentBasesCheck < m_iBM_MaxInvaderBases) {
+						IEntity sourceBase = BM_FindInvaderHeldBase(invaderFaction);
+						IEntity target = null;
+						if (sourceBase) target = BM_FindNextExpansionTarget(sourceBase.GetOrigin(), invaderFaction);
 						
-						string msg = "REBEL INTEL: Radio chatter suggests an Invader column is preparing to move from their territory towards " + name + ".";
-						JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
+						if (target) {
+							JWK_NamedLocationComponent loc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(target);
+							string name = "Unknown";
+							if (loc) name = loc.GetName();
+							
+							string msg = "REBEL INTEL: Radio chatter suggests an Invader column is preparing to move from their territory towards " + name + ".";
+							JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
+						}
 					}
 				}
 			}
@@ -507,10 +761,111 @@ modded class JWK_GameMode
 		}
 	}
 
+	protected void BM_SpawnSynchronizedPatrols(Faction faction)
+	{
+		IEntity sourceBase = BM_FindInvaderHeldBase(faction);
+		if (!sourceBase) return;
+
+		vector pos = sourceBase.GetOrigin();
+		
+		array<EntityID> potentialTargets = {};
+		potentialTargets.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_MilitaryBaseEntity));
+		potentialTargets.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_TownEntity));
+		potentialTargets.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_FactoryEntity));
+		
+		if (potentialTargets.Count() < 6) return;
+
+		// We will spawn 2 separate patrols in different directions
+		int patrolCount = 2;
+		string factionName = faction.GetFactionName();
+		
+		for (int p = 0; p < patrolCount; p++)
+		{
+			// Pick a random sector of the map far from the current objective
+			IEntity targetSector = null;
+			for (int attempt = 0; attempt < 10; attempt++)
+			{
+				EntityID id = potentialTargets.GetRandomElement();
+				targetSector = GetGame().GetWorld().FindEntityByID(id);
+				if (targetSector && targetSector.GetID() != m_iBM_CurrentTargetID)
+				{
+					// Ensure it's at least 1km away from the main fight if possible
+					IEntity mainTarget = GetGame().GetWorld().FindEntityByID(m_iBM_CurrentTargetID);
+					if (mainTarget && vector.Distance(targetSector.GetOrigin(), mainTarget.GetOrigin()) > 1000) break;
+				}
+			}
+			
+			if (!targetSector) continue;
+
+			vector spawnPos = pos + Vector(JWK.Random.RandFloatXY(-150, 150), 0, JWK.Random.RandFloatXY(-150, 150));
+			JWK_Road road; int roadIdx;
+			if (JWK_RoadNetworkManagerComponent.GetInstance().GetClosestRoad(spawnPos, road, roadIdx, 400)) spawnPos = road.points[roadIdx];
+			
+			spawnPos[1] = GetGame().GetWorld().GetSurfaceY(spawnPos[0], spawnPos[2]) + 1.2;
+
+			SCR_EntityCatalog catalog = SCR_Faction.Cast(faction).GetFactionEntityCatalogOfType(EEntityCatalogType.VEHICLE);
+			if (!catalog) continue;
+			
+			array<SCR_EntityCatalogEntry> entries = {};
+			catalog.GetEntityList(entries);
+			array<ResourceName> validPrefabs = {};
+			foreach (SCR_EntityCatalogEntry entry : entries) {
+				if (BM_IsVehicleValid(entry.GetPrefab())) validPrefabs.Insert(entry.GetPrefab());
+			}
+
+			if (validPrefabs.IsEmpty()) continue;
+			
+			IEntity spawned = JWK_SpawnUtils.SpawnEntityPrefab(validPrefabs.GetRandomElement(), spawnPos);
+			if (!spawned) continue;
+
+			BM_ProtectEntityFromGC(spawned);
+			
+			SCR_AIGroup group;
+			JWK_AmbientVehicleEventSpawner spawner = new JWK_AmbientVehicleEventSpawner();
+			spawner.Init(JWK_AmbientTrafficSystem.Get());
+			spawner.SpawnVehicleCrew(spawned, faction.GetFactionKey(), group);
+			
+			if (group) {
+				BM_ProtectGroupFromGC(group);
+				
+				// Assign a long-range patrol route through that sector
+				array<AIWaypoint> waypoints = {};
+				vector sectorPos = targetSector.GetOrigin();
+				
+				for (int i = 0; i < 3; i++) {
+					vector wpPos = sectorPos + Vector(JWK.Random.RandFloatXY(-400, 400), 0, JWK.Random.RandFloatXY(-400, 400));
+					AIWaypoint wp = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.MOVE, wpPos);
+					group.AddWaypoint(wp);
+					waypoints.Insert(wp);
+				}
+				
+				group.AddWaypoint(JWK.GetAIManager().SpawnCycleWaypoint(group.GetOrigin(), waypoints));
+				
+				if (!m_InvaderForce) m_InvaderForce = new JWK_AIForce();
+				JWK_CrewedVehicle cv = new JWK_CrewedVehicle();
+				cv.m_Vehicle = Vehicle.Cast(spawned);
+				cv.m_Crew = group;
+				m_InvaderForce.AttachCrewedVehicle(cv);
+
+				// RADIO NOTIFICATION
+				string locationName = "a remote sector";
+				JWK_NamedLocationComponent loc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(targetSector);
+				if (loc) locationName = loc.GetName();
+
+				string msg = "RADIO CHATTER: High-frequency signal intercepted! " + factionName + " motorized elements are reported patrolling near " + locationName + ".";
+				JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
+				
+				Print("BM_Invasion: Dispatched synchronized map-wide patrol to " + locationName, LogLevel.NORMAL);
+			}
+		}
+	}
+
 	protected void BM_TriggerInvasion()
 	{
 		m_bBM_InvasionTriggered = true;
 		m_fBM_LastExpansionTime = GetGame().GetWorld().GetWorldTime();
+		m_fBM_LastReassessmentTime = m_fBM_LastExpansionTime;
+		m_fBM_LastSynchronizedPatrolTime = m_fBM_LastExpansionTime;
 		m_fBM_CurrentCooldown = 300000; // Start first wave in 5 mins
 		m_iBM_LastAliveCount = 0;
 		m_bBM_IntelNotified = false;
@@ -582,11 +937,27 @@ modded class JWK_GameMode
 			
 			if (target) {
 				m_iBM_CurrentTargetID = target.GetID();
+				m_iBM_CurrentTargetWaveCount = 0; // Reset wave count
 				Print("BM_Invasion: Selected new objective: " + target.GetPrefabData().GetPrefabName(), LogLevel.NORMAL);
 			}
 		}
 
 		if (!target) return;
+
+		bool isPlayerBase = false;
+		SCR_FactionAffiliationComponent targetFac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(target);
+		if (targetFac && targetFac.GetAffiliatedFactionKey() == JWK.GetGameConfig().GetPlayerFactionKey()) {
+			isPlayerBase = true;
+		}
+
+		if (isPlayerBase && m_iBM_CurrentTargetWaveCount >= 3) {
+			Print("BM_Invasion: Max waves (3) reached for player base. Halting expansion wave.", LogLevel.NORMAL);
+			return;
+		}
+		
+		if (isPlayerBase) {
+			m_iBM_CurrentTargetWaveCount++;
+		}
 
 		// RE-TASKING LOGIC: If we have plenty of AI, just send them to the new target instead of spawning new ones
 		if (currentAI >= m_iBM_MaxActiveAI)
@@ -596,20 +967,33 @@ modded class JWK_GameMode
 			foreach (EntityID groupId : m_InvaderForce.GetGroups())
 			{
 				SCR_AIGroup group = SCR_AIGroup.Cast(GetGame().GetWorld().FindEntityByID(groupId));
-				if (!group) continue;
+				if (!group || group.GetAgentsCount() == 0) continue;
 				
+				// BM_FIX: Do not re-task groups currently in combat/reacting to danger
+				if (group.GetDangerEventsCount() > 0) continue;
+
 				// Clear old waypoints and use FF sweep logic to ensure they don't get stuck
-				AIWaypoint current = group.GetCurrentWaypoint();
-				if (current) group.RemoveWaypoint(current);
+				array<AIWaypoint> currentWaypoints = {};
+				group.GetWaypoints(currentWaypoints);
+				foreach (AIWaypoint wp : currentWaypoints) group.RemoveWaypoint(wp);
 				
-				// Prioritize getting to the new target objective quickly
-				AIWaypoint move = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.FORCED_MOVE, target.GetOrigin());
+				vector groupTarget = target.GetOrigin() + Vector(JWK.Random.RandFloatXY(-50, 50), 0, JWK.Random.RandFloatXY(-50, 50));
+				
+				// Prioritize getting to the new target objective quickly but safely
+				AIWaypoint move = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.MOVE, groupTarget);
 				group.AddWaypoint(move);
 				
-				JWK_AIUtils.AddAttackAndSweepWaypoints(group, target.GetOrigin());
+				JWK_AIUtils.AddAttackAndSweepWaypoints(group, groupTarget);
 			}
 			return;
 		}
+
+		string name = "the frontlines";
+		JWK_NamedLocationComponent loc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(target);
+		if (loc) name = loc.GetName();
+		
+		string msg = "URGENT: Intelligence reports a major " + invaderFaction.GetFactionName() + " offensive is underway towards " + name + "!";
+		JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
 
 		BM_SpawnInvasionForce(target.GetOrigin(), invaderFaction, sourcePos);
 	}
@@ -642,6 +1026,7 @@ modded class JWK_GameMode
 		potential.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_MilitaryBaseEntity));
 
 		foreach (EntityID id : potential) {
+			if (id == m_iBM_LastFailedTargetID) continue;
 			IEntity ent = GetGame().GetWorld().FindEntityByID(id);
 			SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(ent);
 			if (fac && fac.GetAffiliatedFaction() != invaderFaction) {
@@ -685,6 +1070,7 @@ modded class JWK_GameMode
 		potential.InsertAll(JWK_IndexSystem.Get().GetAll(JWK_FactoryEntity));
 
 		foreach (EntityID id : potential) {
+			if (id == m_iBM_LastFailedTargetID) continue; // Skip last failed base
 			IEntity ent = GetGame().GetWorld().FindEntityByID(id);
 			SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(ent);
 			if (fac && fac.GetAffiliatedFaction() != invaderFaction)
@@ -703,6 +1089,21 @@ modded class JWK_GameMode
 
 	protected void BM_SpawnInvasionForce(vector targetPos, Faction faction, vector sourcePos = "0 0 0")
 	{
+		// FACTION LOCK: Ensure we are actually spawning the Invader, even if the caller passed the wrong faction
+		SCR_Faction actualFaction = SCR_Faction.Cast(faction);
+		if (!actualFaction || actualFaction.GetFactionKey() != m_sBM_InvaderFactionKey)
+		{
+			actualFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
+			if (!actualFaction) {
+				// Final attempt to load
+				JWK_FactionManager.Cast(GetGame().GetFactionManager()).BM_LoadFaction(m_sBM_InvaderFactionKey);
+				actualFaction = SCR_Faction.Cast(GetGame().GetFactionManager().GetFactionByKey(m_sBM_InvaderFactionKey));
+			}
+		}
+		
+		if (!actualFaction) return;
+		faction = actualFaction;
+
 		int playerCount = GetGame().GetPlayerManager().GetPlayerCount();
 		if (playerCount < 1) playerCount = 1;
 		
@@ -827,12 +1228,12 @@ modded class JWK_GameMode
 			// BM_GC_FIX: Protect the AI Group from Garbage Collection
 			BM_ProtectGroupFromGC(group);
 
-			// Add a slight random offset so they don't all drive to the exact same 1x1 meter coordinate and ram each other
-			vector offset = Vector(JWK.Random.RandFloatXY(-25, 25), 0, JWK.Random.RandFloatXY(-25, 25));
+			// Add a slight random offset so they don't all drive to the exact same coordinate and ram each other
+			vector offset = Vector(JWK.Random.RandFloatXY(-100, 100), 0, JWK.Random.RandFloatXY(-100, 100));
 			vector finalPos = targetPos + offset;
 
-			// FORCE ROAD DRIVING: Give an explicit FORCED_MOVE command near the target
-			AIWaypoint move = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.FORCED_MOVE, finalPos);
+			// COMBAT MOVE: Let them engage enemies on the way to the target
+			AIWaypoint move = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.MOVE, finalPos);
 			group.AddWaypoint(move);
 
 			// DISMOUNT: Force the AI to exit the vehicles upon arrival so they can spread out
@@ -840,7 +1241,7 @@ modded class JWK_GameMode
 			group.AddWaypoint(getOut);
 
 			// Add the native FF Attack and Sweep cycle once they arrive and dismount
-			JWK_AIUtils.AddAttackAndSweepWaypoints(group, targetPos);
+			JWK_AIUtils.AddAttackAndSweepWaypoints(group, finalPos);
 			
 			if (!m_InvaderForce) {
 				m_InvaderForce = new JWK_AIForce();
@@ -873,6 +1274,188 @@ modded class JWK_GameMode
 
 		// If invaders are present and no occupying defenders remain, they win!
 		return (m_iTempInvaderCount > 0 && m_iTempDefenderCount == 0);
+	}
+
+	protected void BM_ReassessInvaderOrders()
+	{
+		if (!m_InvaderForce) return;
+		
+		IEntity currentTarget = null;
+		if (m_iBM_CurrentTargetID != EntityID.INVALID)
+			currentTarget = GetGame().GetWorld().FindEntityByID(m_iBM_CurrentTargetID);
+		
+		if (!currentTarget) return;
+		
+		vector targetPos = currentTarget.GetOrigin();
+		
+		array<EntityID> groupIds = m_InvaderForce.GetGroups();
+		for (int i = 0; i < groupIds.Count(); i++)
+		{
+			EntityID groupId = groupIds[i];
+			SCR_AIGroup group = SCR_AIGroup.Cast(GetGame().GetWorld().FindEntityByID(groupId));
+			if (!group || group.GetAgentsCount() == 0) continue;
+			
+			vector groupPos = group.GetOrigin();
+			float distToTarget = vector.Distance(groupPos, targetPos);
+			
+			array<AIWaypoint> waypoints = {};
+			group.GetWaypoints(waypoints);
+			
+			bool shouldReorder = false;
+			bool isAssisting = false;
+			vector assistPos;
+			
+			// --- MUTUAL SUPPORT LOGIC ---
+			// If they have no orders, check if they should assist a nearby ally or hunt a threat
+			if (waypoints.IsEmpty())
+			{
+				shouldReorder = true;
+				
+				// TACTICAL ASSIST: Check if any other invader group within 300m is taking fire
+				foreach (EntityID otherId : groupIds)
+				{
+					if (otherId == groupId) continue;
+					SCR_AIGroup otherGroup = SCR_AIGroup.Cast(GetGame().GetWorld().FindEntityByID(otherId));
+					if (otherGroup && otherGroup.GetDangerEventsCount() > 0)
+					{
+						vector otherPos = otherGroup.GetOrigin();
+						if (vector.Distance(groupPos, otherPos) < 300)
+						{
+							isAssisting = true;
+							assistPos = otherPos;
+							break;
+						}
+					}
+				}
+			}
+			else
+			{
+				// RELEVANCE CHECK: If they are far away, ensure their current destination matches the active objective
+				if (distToTarget > 250)
+				{
+					AIWaypoint lastWp = waypoints[waypoints.Count() - 1];
+					if (lastWp)
+					{
+						vector wpPos = lastWp.GetOrigin();
+						if (vector.Distance(wpPos, targetPos) > 300)
+						{
+							shouldReorder = true;
+						}
+					}
+				}
+			}
+			
+			if (shouldReorder)
+			{
+				// Clear existing waypoints
+				for (int j = waypoints.Count() - 1; j >= 0; j--)
+				{
+					group.RemoveWaypoint(waypoints[j]);
+				}
+				
+				// --- ARMOR & CREW RETENTION LOGIC (Detection) ---
+				bool inVehicle = false;
+				bool vehicleHasGunner = false;
+				IEntity vehicle = null;
+				array<AIAgent> agents = {};
+				group.GetAgents(agents);
+				foreach (AIAgent agent : agents)
+				{
+					IEntity charEnt = agent.GetControlledEntity();
+					if (charEnt && charEnt.GetParent() && charEnt.GetParent().IsInherited(Vehicle)) 
+					{
+						inVehicle = true;
+						vehicle = charEnt.GetParent();
+						break;
+					}
+				}
+				
+				if (inVehicle && vehicle)
+				{
+					SCR_BaseCompartmentManagerComponent compMgr = SCR_BaseCompartmentManagerComponent.Cast(vehicle.FindComponent(SCR_BaseCompartmentManagerComponent));
+					if (compMgr)
+					{
+						array<BaseCompartmentSlot> compartments = {};
+						compMgr.GetCompartments(compartments);
+						foreach (BaseCompartmentSlot slot : compartments)
+						{
+							if (slot.GetType() == ECompartmentType.TURRET && slot.GetOccupant())
+							{
+								vehicleHasGunner = true;
+								break;
+							}
+						}
+					}
+				}
+
+				// TARGET DETERMINATION: Objective vs Assist
+				vector finalPos;
+				float radius;
+				float angle;
+
+				if (isAssisting)
+				{
+					// Move to assist ally but with a slight flank offset (40m)
+					radius = 40.0;
+					angle = (i - (i / 12) * 12) * 30.0;
+					finalPos = assistPos + Vector(Math.Sin(angle * Math.DEG2RAD) * radius, 0, Math.Cos(angle * Math.DEG2RAD) * radius);
+					Print("BM_Invasion: Group " + groupId.ToString() + " moving to ASSIST nearby unit in combat.", LogLevel.NORMAL);
+				}
+				else
+				{
+					// Standard Objective Push logic
+					int angleIdx = i - (i / 12) * 12;
+					angle = angleIdx * 30.0;
+					radius = JWK.Random.RandFloatXY(50, 140);
+					
+					// Infantry push directly into core
+					if (!inVehicle && distToTarget < 250)
+					{
+						radius = JWK.Random.RandFloatXY(5, 25);
+						angle = JWK.Random.RandFloat01() * 360;
+					}
+					
+					finalPos = targetPos + Vector(Math.Sin(angle * Math.DEG2RAD) * radius, 0, Math.Cos(angle * Math.DEG2RAD) * radius);
+				}
+				
+				AIWaypoint move = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.MOVE, finalPos);
+				group.AddWaypoint(move);
+				
+				if (inVehicle)
+				{
+					if (vehicleHasGunner)
+					{
+						if (distToTarget < 200)
+						{
+							foreach (AIAgent agent : agents)
+							{
+								IEntity charEnt = agent.GetControlledEntity();
+								if (!charEnt) continue;
+								CompartmentAccessComponent compAccess = CompartmentAccessComponent.Cast(charEnt.FindComponent(CompartmentAccessComponent));
+								if (compAccess && compAccess.IsInCompartment())
+								{
+									BaseCompartmentSlot slot = compAccess.GetCompartment();
+									if (slot && slot.GetType() == ECompartmentType.CARGO)
+									{
+										compAccess.GetOutVehicle(0, -1, 0, false);
+									}
+								}
+							}
+						}
+					}
+					else
+					{
+						AIWaypoint getOut = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.GET_OUT, finalPos);
+						group.AddWaypoint(getOut);
+					}
+				}
+				
+				// Use Search and Destroy to ensure they engage threats while moving/assisting
+				JWK_AIUtils.AddAttackAndSweepWaypoints(group, finalPos, 60);
+				
+				if (!isAssisting) Print("BM_Invasion: Re-ordered group " + groupId.ToString() + " to Sector Angle " + angle.ToString() + " at " + finalPos.ToString(), LogLevel.NORMAL);
+			}
+		}
 	}
 
 	protected void BM_CheckOffscreenCaptures()
@@ -933,6 +1516,14 @@ modded class JWK_GameMode
 						}
 					}
 				}
+				
+				// BM_NOTIFICATION: Tell the players they lost a base to the invaders
+				string baseName = "an objective";
+				JWK_NamedLocationComponent loc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(ent);
+				if (loc) baseName = loc.GetName();
+				
+				string msg = "URGENT: Reports confirm that " + invaderFaction.GetFactionName() + " forces have successfully seized control of " + baseName + "!";
+				JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT, msg);
 
 				// BM_FIX: Cleanup the battlefield with a 2s delay to remove dead bodies and abandoned vehicles
 				// We add a delay to ensure the native FF BattleManager has finished its own internal cleanup first.
@@ -1053,9 +1644,10 @@ modded class JWK_GameMode
 		if (character) {
 			DamageManagerComponent damageMgr = character.GetDamageManager();
 			
-			// Always cleanup dead bodies instantly
-			if (damageMgr && damageMgr.IsDestroyed()) {
-				m_aBM_EntitiesToClean.Insert(ent);
+			// Always cleanup dead bodies instantly, but check for players first
+			if (damageMgr && damageMgr.GetState() == EDamageState.DESTROYED) {
+				if (!BM_IsPlayerNearby(ent.GetOrigin(), 100))
+					m_aBM_EntitiesToClean.Insert(ent);
 				return true;
 			}
 			
@@ -1066,9 +1658,10 @@ modded class JWK_GameMode
 		if (ent.IsInherited(Vehicle)) {
 			DamageManagerComponent damageMgr = DamageManagerComponent.Cast(ent.FindComponent(DamageManagerComponent));
 			
-			// Always cleanup destroyed vehicles instantly
-			if (damageMgr && damageMgr.IsDestroyed()) {
-				m_aBM_EntitiesToClean.Insert(ent);
+			// Cleanup destroyed vehicles instantly if no players nearby
+			if (damageMgr && damageMgr.GetState() == EDamageState.DESTROYED) {
+				if (!BM_IsPlayerNearby(ent.GetOrigin(), 150))
+					m_aBM_EntitiesToClean.Insert(ent);
 				return true;
 			}
 
@@ -1076,15 +1669,28 @@ modded class JWK_GameMode
 			SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(ent);
 			SCR_BaseCompartmentManagerComponent compMgr = SCR_BaseCompartmentManagerComponent.Cast(ent.FindComponent(SCR_BaseCompartmentManagerComponent));
 			
-			bool isEmpty = (compMgr && compMgr.GetOccupantCount() == 0);
+			bool hasAliveOccupants = false;
+			if (compMgr) {
+				array<IEntity> occupants = {};
+				compMgr.GetOccupants(occupants);
+				foreach (IEntity occ : occupants) {
+					DamageManagerComponent occDmg = DamageManagerComponent.Cast(occ.FindComponent(DamageManagerComponent));
+					if (occDmg && occDmg.GetState() != EDamageState.DESTROYED) {
+						hasAliveOccupants = true;
+						break;
+					}
+				}
+			}
 			
-			if (isEmpty) {
+			if (!hasAliveOccupants) {
 				// Safety check: Never delete a vehicle owned by a player
 				if (fac && fac.GetAffiliatedFaction() && fac.GetAffiliatedFaction().GetFactionKey() == JWK.GetGameConfig().GetPlayerFactionKey()) {
 					return true;
 				}
 				
-				m_aBM_EntitiesToClean.Insert(ent);
+				// Abandoned vehicle cleanup: stricter player proximity check
+				if (!BM_IsPlayerNearby(ent.GetOrigin(), 250))
+					m_aBM_EntitiesToClean.Insert(ent);
 			}
 			return true;
 		}
@@ -1103,7 +1709,7 @@ modded class JWK_GameMode
 		Vehicle vehicle = Vehicle.Cast(ent);
 		if (vehicle) {
 			DamageManagerComponent damageMgr = vehicle.GetDamageManager();
-			if (damageMgr && damageMgr.IsDestroyed()) return true;
+			if (damageMgr && damageMgr.GetState() == EDamageState.DESTROYED) return true;
 			
 			SCR_BaseCompartmentManagerComponent compMgr = SCR_BaseCompartmentManagerComponent.Cast(vehicle.FindComponent(SCR_BaseCompartmentManagerComponent));
 			if (compMgr) {
@@ -1121,7 +1727,7 @@ modded class JWK_GameMode
 		if (!character) return true;
 		
 		DamageManagerComponent damageMgr = character.GetDamageManager();
-		if (damageMgr && damageMgr.IsDestroyed()) return true;
+		if (damageMgr && damageMgr.GetState() == EDamageState.DESTROYED) return true;
 
 		SCR_FactionAffiliationComponent fac = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(character);
 		if (!fac) return true;
@@ -1177,8 +1783,12 @@ modded class JWK_GameMode
 
 		if (saveData) {
 			saveData.m_bBM_InvasionTriggered = m_bBM_InvasionTriggered;
+			saveData.m_bBM_InvaderHadBase = m_bBM_InvaderHadBase;
+			saveData.m_bBM_InvasionDefeated = m_bBM_InvasionDefeated;
 			saveData.m_sBM_InvaderFactionKey = m_sBM_InvaderFactionKey;
 			saveData.m_fBM_LastExpansionTime = m_fBM_LastExpansionTime;
+			saveData.m_iBM_CurrentTargetWaveCount = m_iBM_CurrentTargetWaveCount;
+			saveData.m_iBM_LastFailedTargetID = m_iBM_LastFailedTargetID;
 			
 			saveData.m_aInvaderGroupPrefabs.Clear();
 			saveData.m_aInvaderGroupPositions.Clear();
@@ -1221,34 +1831,52 @@ modded class JWK_GameMode
 		}
 	}
 
+	protected ref array<string> m_aTempRestorationPrefabs = new array<string>();
+	protected ref array<vector> m_aTempRestorationPositions = new array<vector>();
+
 	override void LoadState_S(JWK_GameModeSaveData saveData)
 	{
 		super.LoadState_S(saveData);
 
 		if (saveData) {
 			m_bBM_InvasionTriggered = saveData.m_bBM_InvasionTriggered;
+			m_bBM_InvaderHadBase = saveData.m_bBM_InvaderHadBase;
+			m_bBM_InvasionDefeated = saveData.m_bBM_InvasionDefeated;
 			m_sBM_InvaderFactionKey = saveData.m_sBM_InvaderFactionKey;
+			m_iBM_CurrentTargetWaveCount = saveData.m_iBM_CurrentTargetWaveCount;
+			m_iBM_LastFailedTargetID = saveData.m_iBM_LastFailedTargetID;
+			
+			// FORCED PERSISTENCE FIX: Re-load the faction immediately on resume
+			// This ensures the Invader is a "known entity" before bases stream in.
+			if (!m_sBM_InvaderFactionKey.IsEmpty() && m_sBM_InvaderFactionKey != "None")
+			{
+				JWK_FactionManager factionMgr = JWK_FactionManager.Cast(GetGame().GetFactionManager());
+				if (factionMgr) factionMgr.BM_LoadFaction(m_sBM_InvaderFactionKey);
+			}
 			
 			// BM_FIX: Reset expansion time relative to current server time to prevent "Time Travel" stalling.
 			m_fBM_LastExpansionTime = GetGame().GetWorld().GetWorldTime();
 			
 			if (!saveData.m_aInvaderGroupPrefabs.IsEmpty()) {
+				m_aTempRestorationPrefabs.Copy(saveData.m_aInvaderGroupPrefabs);
+				m_aTempRestorationPositions.Copy(saveData.m_aInvaderGroupPositions);
+				
 				// DELAYED RESTORATION: Wait for systems to wake up before spawning units
-				GetGame().GetCallqueue().CallLater(BM_RestoreInvaderUnits, 10000, false, saveData);
+				GetGame().GetCallqueue().CallLater(BM_RestoreInvaderUnits, 10000, false);
 			}
 		}
 	}
 
-	protected void BM_RestoreInvaderUnits(JWK_GameModeSaveData saveData)
+	protected void BM_RestoreInvaderUnits()
 	{
-		if (!saveData || saveData.m_aInvaderGroupPrefabs.IsEmpty()) return;
+		if (m_aTempRestorationPrefabs.IsEmpty()) return;
 
-		int count = Math.Min(saveData.m_aInvaderGroupPrefabs.Count(), saveData.m_aInvaderGroupPositions.Count());
+		int count = Math.Min(m_aTempRestorationPrefabs.Count(), m_aTempRestorationPositions.Count());
 		Print("BM_Invasion: Restoration cycle started. Respawning " + count + " groups...", LogLevel.NORMAL);
 
 		for (int i = 0; i < count; i++) {
-			ResourceName prefab = saveData.m_aInvaderGroupPrefabs[i];
-			vector pos = saveData.m_aInvaderGroupPositions[i];
+			ResourceName prefab = m_aTempRestorationPrefabs[i];
+			vector pos = m_aTempRestorationPositions[i];
 			
 			IEntity spawned = JWK_SpawnUtils.SpawnEntityPrefab(prefab, pos);
 			if (spawned) {
@@ -1270,10 +1898,15 @@ modded class JWK_GameMode
 						m_InvaderForce.m_bAutoUnstuck = true;
 					}
 					
-					JWK_CrewedVehicle cv = new JWK_CrewedVehicle();
-					cv.m_Vehicle = Vehicle.Cast(spawned);
-					cv.m_Crew = group;
-					m_InvaderForce.AttachCrewedVehicle(cv);
+					Vehicle vic = Vehicle.Cast(spawned);
+					if (vic) {
+						JWK_CrewedVehicle cv = new JWK_CrewedVehicle();
+						cv.m_Vehicle = vic;
+						cv.m_Crew = group;
+						m_InvaderForce.AttachCrewedVehicle(cv);
+					} else {
+						m_InvaderForce.AttachGroup(group);
+					}
 					
 					// Re-issue default orders to the current player position if invasion is active
 					AIWaypoint snd = JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.SEARCH_AND_DESTROY, group.GetOrigin());
@@ -1281,5 +1914,8 @@ modded class JWK_GameMode
 				}
 			}
 		}
+		
+		m_aTempRestorationPrefabs.Clear();
+		m_aTempRestorationPositions.Clear();
 	}
 }
