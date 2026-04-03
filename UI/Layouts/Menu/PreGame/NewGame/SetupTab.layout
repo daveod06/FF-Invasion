@@ -56,6 +56,42 @@ FrameWidgetClass {
       }
      }
     }
+    ButtonWidgetClass "{BB06D1BE17825BD3}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+     Name "InvaderTickets"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+       m_sLabel "Invader Tickets"
+      }
+     }
+    }
+    ButtonWidgetClass "{CC06D1BE17825BD3}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
+     Name "InvasionMinBases"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_SpinBoxComponent "{5472C6CBC0640458}" {
+       m_sLabel "Min Bases to Trigger"
+      }
+     }
+    }
+    ButtonWidgetClass "{DD06D1BE17825BD3}" : "{5D5055E10FD00549}UI/layouts/WidgetLibrary/ToolBoxes/WLib_Checkbox.layout" {
+     Name "InvasionInstant"
+     Slot LayoutSlot "{59BA5A735A7D34E2}" {
+      HorizontalAlign 3
+      Padding 4 4 4 4
+     }
+     components {
+      SCR_CheckboxComponent "{5472C6CBC0640458}" {
+       m_sLabel "Start War Immediately"
+      }
+     }
+    }
     ButtonWidgetClass "{6506D1BE17825BD7}" : "{C9DF0E6590F6C388}UI/layouts/WidgetLibrary/SpinBox/WLib_SpinBox.layout" {
      Name "SupportingFaction"
      Slot LayoutSlot "{59BA5A735A7D34E2}" {
