@@ -17,60 +17,41 @@
  * For more info or to contact the author, visit the project website:                                                 *
  *    https://www.johnnykerner.dev/FreedomFighters/                                                                   *
  ******************************************************************************************************************** */
+// BakerMods override:
+//   - SpawnNpc_S: after spawning, overrides the NPC's faction affiliation to match the owner entity's
+//     faction affiliation component (e.g. HQ commander inherits the HQ faction).
 
-[BaseContainerProps()]
-class JWK_GameModeSaveDataClass : EPF_EntitySaveDataClass
+modded class JWK_BaseCharacterPlacementControllerComponent
 {
-}
+	// BM: cached faction affiliation of the owner entity; used to override spawned NPC faction
+	protected SCR_FactionAffiliationComponent m_OwnerFactionAffiliation;
 
-[EDF_DbName.Automatic()]
-class JWK_GameModeSaveData : EPF_EntitySaveData
-{
-	int m_iGameplayTime;
-	int m_iRootSeed;
-	string m_sSaveRevision;
-
-	override EPF_EReadResult ReadFrom(IEntity entity, EPF_EntitySaveDataClass attributes)
+	// --------------------------------------------------------------------------------------------------------
+	override void OnPostInit(IEntity owner)
 	{
-		EPF_EReadResult readResult = super.ReadFrom(entity, attributes);
+		super.OnPostInit(owner);
 
-		JWK_GameMode gameMode = JWK_GameMode.Cast(entity);
-		gameMode.SaveState_S(this);
-
-		return readResult;
+		m_OwnerFactionAffiliation = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(owner);
 	}
 
-	override EPF_EApplyResult ApplyTo(IEntity entity, EPF_EntitySaveDataClass attributes)
+	// --------------------------------------------------------------------------------------------------------
+	override IEntity SpawnNpc_S(ResourceName prefab, ResourceName groupPrefab = ResourceName.Empty)
 	{
-		EPF_EApplyResult applyResult = super.ApplyTo(entity, attributes);
-		
-		JWK_GameMode gameMode = JWK_GameMode.Cast(entity);
-		gameMode.LoadState_S(this);
-		
-		return applyResult;
-	}
+		IEntity npcEntity = super.SpawnNpc_S(prefab, groupPrefab);
 
-	override protected bool SerializationSave(BaseSerializationSaveContext saveContext)
-	{
-		if (!super.SerializationSave(saveContext))
-			return false;
+		// BM: override NPC faction ONLY for invader-owned entities (e.g. HQ commander)
+		// Normal occupier/player checkpoints use default AMBIENT role faction — don't touch them
+		if (m_OwnerFactionAffiliation && npcEntity)
+		{
+			Faction ownerFaction = m_OwnerFactionAffiliation.GetAffiliatedFaction();
+			if (ownerFaction && ownerFaction.GetFactionKey() == BM_InvasionManager.s_InvaderFactionKey)
+			{
+				SCR_FactionAffiliationComponent npcAffil = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(npcEntity);
+				if (npcAffil)
+					npcAffil.SetAffiliatedFaction(ownerFaction);
+			}
+		}
 
-		saveContext.WriteValue("m_iGameplayTime", m_iGameplayTime);
-		saveContext.WriteValue("m_iRootSeed", m_iRootSeed);
-		saveContext.WriteValue("m_sSaveRevision", m_sSaveRevision);
-
-		return true;
-	}
-
-	override protected bool SerializationLoad(BaseSerializationLoadContext loadContext)
-	{
-		if (!super.SerializationLoad(loadContext))
-			return false;
-
-		loadContext.ReadValue("m_iGameplayTime", m_iGameplayTime);
-		loadContext.ReadValue("m_iRootSeed", m_iRootSeed);
-		loadContext.ReadValue("m_sSaveRevision", m_sSaveRevision);
-		
-		return true;
+		return npcEntity;
 	}
 }
