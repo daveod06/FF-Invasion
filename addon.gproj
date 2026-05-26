@@ -3,6 +3,20 @@ GameProject {
  GUID "68B00DA040906477"
  TITLE "FF - BakerMods"
  Dependencies {
-  "5D6EA74A94173EDF" "5D6EBC81EB1842EF" "68770D078A1E9C0F" "CAFEBEEFF0CACC1A" "58D0FB3206B6F859"
+  "58D0FB3206B6F859" "CAFEBEEFF0CACC1A" "68770D078A1E9C0F"
+ }
+ Configurations {
+  GameProjectConfig PC {
+  }
+  GameProjectConfig XBOX_ONE {
+  }
+  GameProjectConfig XBOX_SERIES {
+  }
+  GameProjectConfig PS4 {
+  }
+  GameProjectConfig PS5 {
+  }
+  GameProjectConfig HEADLESS {
+  }
  }
 }
