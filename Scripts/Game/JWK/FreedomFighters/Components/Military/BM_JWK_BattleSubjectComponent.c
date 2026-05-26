@@ -26,80 +26,9 @@
 //   Fix 11: Garrison spawn uses fixed-direction scatter instead of east-only line.
 //   Fix 17: Player notification broadcast when garrison is deployed.
 
-[ComponentEditorProps(category: "JWK/FreedomFighters", description: "")]
-class JWK_BattleSubjectComponentClass: JWK_EntityComponentClass
+modded class JWK_BattleSubjectComponent
 {
-}
-
-class JWK_BattleSubjectComponent: JWK_EntityComponent
-{
-	[Attribute(desc: "Leave null to use default one specified in BattleManager.", category: "Enemy AI")]
-	ref JWK_BaseBattleAIGenerator m_EnemyGenerator;
-
-	[Attribute(
-		defvalue: "1",
-		desc: "Set false to force disable generating infantry. If set, vehicles must be allowed and there have to be roads available.",
-		category: "Enemy AI"
-	)]
-	bool m_bEnemyAllowInfantry;
-
-	[Attribute(
-		defvalue: "1",
-		desc: "Set false to force disable generating vehicles, even if there are roads available.",
-		category: "Enemy AI"
-	)]
-	bool m_bEnemyAllowVehicles;
-
-	[Attribute(defvalue: "1", desc: "Scaling factor for enemy forces within battle.", category: "Enemy AI")]
-	float m_fEnemyMultiplier;
-
-	[Attribute(defvalue: "1", desc: "Should enemy use virtual artillery?", category: "Enemy AI")]
-	bool m_bAllowEnemyArtillery;
-
-	// -----------------------------------------
-
-	[Attribute(defvalue: "-1", category: "AI placement")]
-	int m_iMinimumInfantrySpawnDistance;
-
-	[Attribute(defvalue: "-1", category: "AI placement")]
-	int m_iMaximumInfantrySpawnDistance;
-
-	[Attribute(desc: "Distance in a straight line.", defvalue: "-1", category: "AI placement")]
-	int m_iMinimumVehicleSpawnDistanceStraight;
-
-	[Attribute(desc: "Distance in a straight line.", defvalue: "-1", category: "AI placement")]
-	int m_iMaximumVehicleSpawnDistanceStraight;
-
-	[Attribute(desc: "Distance over road network to the target.", defvalue: "-1", category: "AI placement")]
-	int m_iMinimumVehicleSpawnDistanceRoad;
-
-	[Attribute(desc: "Distance over road network to the target.", defvalue: "-1", category: "AI placement")]
-	int m_iMaximumVehicleSpawnDistanceRoad;
-
-	[Attribute(desc: "Road points within this distance will be used as placement search entry points.", defvalue: "-1", category: "AI placement")]
-	int m_iRoadLinkRange;
-
-	// -----------------------------------------
-
-	[Attribute("-1", category: "Battle", desc: "Delay from the battle start for the enemy AI deployment to begin. Neg. = default.")]
-	int m_iStartTimerSeconds;
-
-	[Attribute("0", category: "Battle")]
-	bool m_bEnableAutostart;
-
-	[Attribute("1", category: "Battle")]
-	bool m_bAutostartOnPlayerDomination;
-
-	// -----------------------------------------
-
-	[Attribute("0", UIWidgets.SearchComboBox, "", "", ParamEnumArray.FromEnum(ENotification), category: "UI")]
-	ENotification m_iStartNotification;
-
 	// -------------------------------------------------------------------------------------
-
-	protected SCR_FactionAffiliationComponent m_FactionAffiliation;
-	protected JWK_WorldZoneControllerComponent m_WorldZones;
-	protected JWK_AIForceComponent m_AIForces;
 
 	// BM: tracks spawned garrison groups so they can be cleaned up on battle finish (Fix 3)
 	protected ref JWK_AIForce m_BMGarrisonForce;
@@ -108,47 +37,29 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 	protected float m_fBMLastInvaderBattleFinishTime = -999999;
 
 	// -------------------------------------------------------------------------------------
-
-	// Server only.
-	// args: (JWK_BattleSubjectComponent this, JWK_BattleControllerComponent controller)
-	protected ref ScriptInvoker m_OnBattleStarted_S;
-
-	// Server only.
-	// args: (JWK_BattleSubjectComponent this, JWK_BattleControllerComponent controller)
-	protected ref ScriptInvoker m_OnBattleFinished_S;
-
-	// -------------------------------------------------------------------------------------
-
-	override void OnPostInit(IEntity owner)
+	override void DoBattleStart_S(JWK_BattleControllerEntity controller)
 	{
-		super.OnPostInit(owner);
-
-		m_FactionAffiliation = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(owner);
-		m_WorldZones = JWK_CompTU<JWK_WorldZoneControllerComponent>.FindIn(owner);
-		m_AIForces = JWK_CompTU<JWK_AIForceComponent>.FindIn(owner);
-
-		SetComponentIndexed(true, JWK_BattleSubjectComponent);
-	}
-
-	void DoBattleStart_S(JWK_BattleControllerEntity controller)
-	{
+		super.DoBattleStart_S(controller);
+		
 		// BM Fix 3+11+17: stream garrison defenders if invaders are present in the battle zones
 		BM_MaybeStreamGarrisonForces_S();
-
-		if (m_OnBattleStarted_S)
-			m_OnBattleStarted_S.Invoke(this, controller);
 	}
 
-	void DoBattleFinish_S(JWK_BattleControllerEntity controller)
+	// -------------------------------------------------------------------------------------
+	override void DoBattleFinish_S(JWK_BattleControllerEntity controller)
 	{
+		super.DoBattleFinish_S(controller);
+		
 		// BM Fix 3: clean up tracked garrison force
-		if (m_BMGarrisonForce) {
+		if (m_BMGarrisonForce)
+		{
 			m_BMGarrisonForce.ForceDeleteAllUnits();
 			m_BMGarrisonForce = null;
 		}
 
 		// BM Fix 2+8: handle invader battle outcome
-		if (controller.IsInvaderBattle_S()) {
+		if (controller.IsInvaderBattle_S())
+		{
 			// Fix 8: set cooldown to prevent phantom re-triggers at this location
 			m_fBMLastInvaderBattleFinishTime = GetGame().GetWorld().GetWorldTime();
 
@@ -157,60 +68,22 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 			if (invaderIdx >= 0 && controller.GetWinningFactionID() == invaderIdx)
 				BM_CaptureLocationForInvaders_S();
 		}
-
-		if (m_OnBattleFinished_S)
-			m_OnBattleFinished_S.Invoke(this, controller);
-	}
-
-	bool IsBattleActive_S()
-	{
-		JWK_BattleControllerEntity controller = JWK.GetBattleManager().GetController();
-		return (controller && controller.GetSubject_S() == this && controller.IsActive_S());
-	}
-
-	Faction GetAttackingFaction_S()
-	{
-		JWK_BattleControllerEntity controller = JWK.GetBattleManager().GetController();
-		if (!controller) return null;
-
-		return controller.GetAttackingFaction_S();
-	}
-
-	JWK_BaseBattleAIGenerator GetEnemyGenerator()
-	{
-		if (m_EnemyGenerator)
-			return m_EnemyGenerator;
-
-		return JWK.GetBattleManager().m_DefaultEnemyGenerator;
 	}
 
 	// -------------------------------------------------------------------------------------
-
-	ScriptInvoker GetOnBattleStarted_S()
-	{
-		if (!m_OnBattleStarted_S) m_OnBattleStarted_S = new ScriptInvoker();
-		return m_OnBattleStarted_S;
-	}
-
-	ScriptInvoker GetOnBattleFinished_S()
-	{
-		if (!m_OnBattleFinished_S) m_OnBattleFinished_S = new ScriptInvoker();
-		return m_OnBattleFinished_S;
-	}
-
-	// -------------------------------------------------------------------------------------
-
-	bool CheckAutostartCondition_S()
-	{
+	override bool CheckAutostartCondition_S()
+	{		
 		// BM Fix 10+8: invader-triggered defensive battle
 		if (BM_CheckInvaderAutostartCondition_S()) return true;
 
-		if (m_bAutostartOnPlayerDomination) {
+		if (m_bAutostartOnPlayerDomination)
+		{
 			if (m_FactionAffiliation.GetAffiliatedFaction() == JWK.GetFactions().GetPlayerFaction())
 				return false;
 
 			array<JWK_WorldZoneComponent> zones = {};
-			if (m_WorldZones) m_WorldZones.FindZonesByTag_S(JWK_EWorldZoneTag.BATTLE_AREA, zones);
+			if (m_WorldZones)
+				m_WorldZones.FindZonesByTag_S(JWK_EWorldZoneTag.BATTLE_AREA, zones);
 
 			float players = GetPlayersWeightForAutostart(zones);
 			float enemies = GetEnemiesWeightForAutostart(zones);
@@ -221,6 +94,7 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 		return false;
 	}
 
+	// -------------------------------------------------------------------------------------
 	// BM Fix 10: guard against re-triggering while battle is active or in cooldown.
 	// Only triggers the FF battle system when BOTH invaders AND players are in the zone.
 	// Pure AI-vs-AI fights are handled by the siege system in BM_InvasionManager instead.
@@ -277,6 +151,7 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 		return false;
 	}
 
+	// -------------------------------------------------------------------------------------
 	// BM Fix 3+11+17: spawn garrison when invaders are in battle zones OR when base is invader-owned (player attack).
 	protected void BM_MaybeStreamGarrisonForces_S()
 	{
@@ -308,6 +183,7 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 		}
 	}
 
+	// -------------------------------------------------------------------------------------
 	// BM Fix 3+11+17: spawn 2 player-faction infantry groups and track them for later cleanup.
 	// Fix 11: uses directional scatter (+X and -X) instead of an east-only line.
 	// Fix 17: broadcasts alert notification to players.
@@ -383,6 +259,7 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 		JWK_Log.Log(this, "Streamed " + defenderCount + " garrison groups to defend against invaders at " + locName + ".");
 	}
 
+	// -------------------------------------------------------------------------------------
 	// Fix 2: force faction change on this location entity to the invader faction.
 	protected void BM_CaptureLocationForInvaders_S()
 	{
@@ -398,6 +275,7 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 		}
 	}
 
+	// -------------------------------------------------------------------------------------
 	// Fix 5: safe faction index lookup — iterates faction manager rather than calling GetFactionIndex.
 	protected int BM_GetInvaderFactionIndex()
 	{
@@ -410,46 +288,4 @@ class JWK_BattleSubjectComponent: JWK_EntityComponent
 		return -1;
 	}
 
-	protected float GetPlayersWeightForAutostart(array<JWK_WorldZoneComponent> zones)
-	{
-		if (zones.IsEmpty()) return 0;
-
-		array<int> players = {};
-		PlayerManager mgr = GetGame().GetPlayerManager();
-		mgr.GetPlayers(players);
-		int result = 0;
-
-		foreach (int playerID : players) {
-			IEntity entity = mgr.GetPlayerControlledEntity(playerID);
-			if (!entity) continue;
-
-			foreach (JWK_WorldZoneComponent zone : zones) {
-				if (zone.Contains(entity.GetOrigin())) {
-					result += 1;
-					break;
-				}
-			}
-		}
-
-		return GetScaledPlayersPresenceWeight(result);
-	}
-
-	// Scale it, so that single player or a pair doesnt need to hunt throughout the area for a single
-	// AI that might be stuck somewhere inside a building.
-	protected float GetScaledPlayersPresenceWeight(int playersNum)
-	{
-		if (playersNum == 1) return 4;
-		if (playersNum == 2) return 6;
-		if (playersNum == 3) return 5;
-
-		return playersNum;
-	}
-
-	protected float GetEnemiesWeightForAutostart(array<JWK_WorldZoneComponent> zones)
-	{
-		if (!m_AIForces) return 0;
-
-		JWK_AIForce force = m_AIForces.GetForce_S();
-		return force.GetAliveCharactersNum();
-	}
 }
