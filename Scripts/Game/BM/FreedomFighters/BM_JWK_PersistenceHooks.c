@@ -150,6 +150,16 @@ modded class JWK_GameMode
 			mgr.m_sTargetBaseName = saveData.m_sBM_TargetBaseName;
 			mgr.BM_ReconstituteAIFroces_S(saveData.m_aBM_PersistedGroups);
 
+			// Store captured base names on manager BEFORE the EPF state check.
+			// If EPF is already ACTIVE here (typical, since LoadState_S schedules
+			// us via CallLater 1000ms), the synchronous BM_OnPersistenceRestored()
+			// call below reads m_aBM_PendingCapturedBaseNames; an assignment after
+			// that branch would be too late and the re-apply loop would no-op,
+			// causing invader-captured bases to revert to their original faction
+			// at next server start.
+			if (saveData.m_aBM_CapturedBaseNames && !saveData.m_aBM_CapturedBaseNames.IsEmpty())
+				mgr.m_aBM_PendingCapturedBaseNames = saveData.m_aBM_CapturedBaseNames;
+
 			EPF_PersistenceManager pMgr = EPF_PersistenceManager.GetInstance();
 			if (pMgr) {
 				// If EPF is already ACTIVE, call directly — the event won't fire again
@@ -163,10 +173,6 @@ modded class JWK_GameMode
 				// No persistence manager — just enable the brain directly
 				mgr.BM_OnPersistenceRestored();
 			}
-
-			// Store captured base names on manager so they can be re-applied after EPF finishes
-			if (saveData.m_aBM_CapturedBaseNames && !saveData.m_aBM_CapturedBaseNames.IsEmpty())
-				mgr.m_aBM_PendingCapturedBaseNames = saveData.m_aBM_CapturedBaseNames;
 		}
 	}
 }
