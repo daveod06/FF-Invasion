@@ -9,6 +9,12 @@
 //     - Defender streaming: spawns base owner faction garrison on invader approach
 //     - Base capture: JWK_FactionControlComponent.ChangeControlToFaction (auto-updates map)
 //   Previous fixes retained: 4, 6, 7, 9, 11, 12, 13, 14, 15, 18, 19
+//   Session 5 fixes:
+//     - Siege detection uses CountInvaderGroupsNear (group entity position, streaming-safe)
+//     - Virtual resolution: points-based random outcome after SIEGE_TIMEOUT_MS
+//       invader pts = group count at siege start; defender pts = random 1-3
+//       win chance = invaderPts / (invaderPts + defenderPts)
+//     - Invader retreat: groups route back to HQ on virtual loss
 
 // Tracks an active invader siege at a base
 class BM_SiegeState
@@ -16,6 +22,8 @@ class BM_SiegeState
 	EntityID m_BaseID;
 	ref JWK_AIForce m_DefenderForce;
 	float m_fStartTime;
+	int m_iInvaderPoints;  // invader group count at siege start
+	int m_iDefenderPoints; // defender group count spawned (random 1-3)
 }
 
 [EntityEditorProps(category: "BakerMods/Invasion", description: "Standalone Strategic Brain Entity.")]
@@ -66,7 +74,9 @@ class BM_InvasionManager : GenericEntity
 	static const int SIEGE_CHECK_INTERVAL = 5;    // every 10s (5 heartbeats * 2s)
 	static const float SIEGE_DETECT_RANGE = 200;
 	static const float SIEGE_DETECT_RANGE_SQ = 40000;
-	static const float SIEGE_GRACE_PERIOD_MS = 45000; // 45s before checking outcome
+	static const float SIEGE_GRACE_PERIOD_MS = 45000;  // 45s before checking outcome
+	static const float SIEGE_TIMEOUT_MS = 600000;      // 10 min -> virtual resolution if no player
+
 
 	// Ambient patrol system: 2 roaming infantry patrols for war ambiance (free, no tickets)
 	protected ref array<SCR_AIGroup> m_aPatrolGroups = {};
@@ -157,7 +167,7 @@ class BM_InvasionManager : GenericEntity
 	{
 		// Old infantry reconstitution disabled — fresh convoy with vehicles will be launched
 		// by PerformReconstitution_S via the m_bReconstitutionNeeded flag
-		JWK_Log.Log(this, "Skipping legacy infantry reconstitution — will launch fresh vehicle convoy instead.");
+		JWK_Log.Log(this, "Skipping legacy infantry reconstitution -- will launch fresh vehicle convoy instead.");
 	}
 
 	// --------------------------------------------------------------------------------------------------------
@@ -173,7 +183,7 @@ class BM_InvasionManager : GenericEntity
 
 		// Fix 4: HQ liveness check — if HQ was set but is now destroyed, reset to bridgehead phase
 		if (m_iPhase >= 2 && m_sHQPersistentID != string.Empty && !GetHQ()) {
-			JWK_Log.Log(this, "HQ destroyed — resetting to bridgehead phase.");
+			JWK_Log.Log(this, "HQ destroyed -- resetting to bridgehead phase.");
 			m_sHQPersistentID = string.Empty;
 			m_vHQPos = vector.Zero;
 			m_HQ = null;
@@ -278,7 +288,7 @@ class BM_InvasionManager : GenericEntity
 
 	protected void EndInvasion_S()
 	{
-		JWK_Log.Log(this, "Invasion defeated — tickets exhausted, no units remain.");
+		JWK_Log.Log(this, "Invasion defeated -- tickets exhausted, no units remain.");
 		JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT,
 			"VICTORY: The invader offensive has been repelled! All hostile forces eliminated.");
 
@@ -332,7 +342,10 @@ class BM_InvasionManager : GenericEntity
 		SCR_FactionAffiliationComponent affil = JWK_CompTU<SCR_FactionAffiliationComponent>.FindIn(target);
 		if (affil && affil.GetAffiliatedFactionKey() == GetFaction()) { m_sTargetBaseName = ""; return; }
 		IEntity source = GetHQ();
-		if (source) LaunchConvoy_S(source, target);
+		if (source) {
+			LaunchConvoy_S(source, target);
+			m_bConvoyEnRoute = true;
+		}
 
 		// Prevent UpdateStrategicFrontline_S from also firing immediately
 		m_fLastActionTime = GetGame().GetWorld().GetWorldTime();
@@ -695,8 +708,8 @@ class BM_InvasionManager : GenericEntity
 			// Skip if siege already active at this base
 			if (FindSiegeForBase(baseID)) continue;
 
-			// Check if invader groups are near this base
-			if (CountInvaderAgentsNear(base.GetOrigin(), SIEGE_DETECT_RANGE) > 0) {
+			// Check if invader groups are near this base (group entity position, streaming-safe)
+			if (CountInvaderGroupsNear(base.GetOrigin(), SIEGE_DETECT_RANGE) > 0) {
 				StartSiege_S(base);
 
 				// Clear convoy flag if this is the current target
@@ -726,29 +739,54 @@ class BM_InvasionManager : GenericEntity
 			}
 
 			// Grace period: let them fight before checking outcome
-			if (now - siege.m_fStartTime < SIEGE_GRACE_PERIOD_MS) continue;
+			float siegeDuration = now - siege.m_fStartTime;
+			if (siegeDuration < SIEGE_GRACE_PERIOD_MS) continue;
 
-			int invadersNearby = CountInvaderAgentsNear(base.GetOrigin(), SIEGE_DETECT_RANGE);
+			int invaderAgentsNear = CountInvaderAgentsNear(base.GetOrigin(), SIEGE_DETECT_RANGE);
+			int invaderGroupsNear = CountInvaderGroupsNear(base.GetOrigin(), SIEGE_DETECT_RANGE);
 			int defendersAlive = 0;
 			if (siege.m_DefenderForce) defendersAlive = siege.m_DefenderForce.CountAgents();
 
-			if (invadersNearby > 0 && defendersAlive == 0) {
-				// Invaders won — capture the base, clean up defender force
+			JWK_NamedLocationComponent namedLoc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(base);
+			string locName = "a location";
+			if (namedLoc) locName = namedLoc.GetName();
+
+			if (invaderGroupsNear == 0) {
+				// Invaders retreated or wiped -- defense succeeded
+				if (siege.m_DefenderForce) siege.m_DefenderForce.ForceDeleteAllUnits();
+				m_aSieges.Remove(s);
+				JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT,
+					"UPDATE: Invader assault on " + locName + " repelled.");
+
+			} else if (invaderAgentsNear > 0 && defendersAlive == 0) {
+				// Streaming-based win: player nearby, agents visible, defenders wiped
 				if (siege.m_DefenderForce) siege.m_DefenderForce.ForceDeleteAllUnits();
 				CaptureBaseForInvaders_S(base);
 				m_aSieges.Remove(s);
 
-			} else if (invadersNearby == 0) {
-				// Invaders defeated or retreated — defense succeeded
+			} else if (siegeDuration >= SIEGE_TIMEOUT_MS) {
+				// Virtual resolution: no player nearby, use points-based random outcome
 				if (siege.m_DefenderForce) siege.m_DefenderForce.ForceDeleteAllUnits();
+				int total = siege.m_iInvaderPoints + siege.m_iDefenderPoints;
+				int roll = JWK.Random.RandInt(0, total - 1);
+				bool invadersWin = roll < siege.m_iInvaderPoints;
+				string siegeResult = "DEFENDER WIN";
+				if (invadersWin) siegeResult = "INVADER WIN";
+				JWK_Log.Log(this, string.Format(
+					"[Siege] Virtual resolution at %1: %2 inv pts vs %3 def pts, roll %4/%5 = %6.",
+					locName, siege.m_iInvaderPoints, siege.m_iDefenderPoints,
+					roll, total - 1, siegeResult
+				));
+				if (invadersWin) {
+					CaptureBaseForInvaders_S(base);
+				} else {
+					JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT,
+						"UPDATE: Invader assault on " + locName + " repelled.");
+					BM_RetreatInvadersFromBase_S(base);
+				}
 				m_aSieges.Remove(s);
-
-				JWK_NamedLocationComponent namedLoc = JWK_CompTU<JWK_NamedLocationComponent>.FindIn(base);
-				string locName = "a location";
-				if (namedLoc) locName = namedLoc.GetName();
-				JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT,
-					"UPDATE: Invader assault on " + locName + " repelled.");
 			}
+			// else: siege ongoing, check again next interval
 		}
 	}
 
@@ -791,10 +829,15 @@ class BM_InvasionManager : GenericEntity
 		siege.m_DefenderForce = new JWK_AIForce();
 		siege.m_DefenderForce.m_Log.m_Prefix = "BM_Siege_Def";
 
+		// Snapshot points at siege start (streaming-safe group count)
+		siege.m_iInvaderPoints = CountInvaderGroupsNear(base.GetOrigin(), SIEGE_DETECT_RANGE);
+		if (siege.m_iInvaderPoints < 1) siege.m_iInvaderPoints = 1;
+		siege.m_iDefenderPoints = JWK.Random.RandInt(1, 3);
+
 		vector baseOrigin = base.GetOrigin();
 
-		// Spawn 3 defender groups around the base
-		for (int i = 0; i < 3; i++) {
+		// Spawn m_iDefenderPoints groups (random 1-3) around the base
+		for (int i = 0; i < siege.m_iDefenderPoints; i++) {
 			float angle = i * (2.0 * Math.PI / 3.0) + JWK.Random.RandFloatXY(-0.3, 0.3);
 			float radius = 10 + JWK.Random.RandFloatXY(0, 8);
 			vector spawnPos = baseOrigin + Vector(Math.Sin(angle) * radius, 0, Math.Cos(angle) * radius);
@@ -819,7 +862,10 @@ class BM_InvasionManager : GenericEntity
 		if (namedLoc) locName = namedLoc.GetName();
 		JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT,
 			"ALERT: Invader forces assaulting " + locName + "! Garrison deployed.");
-		JWK_Log.Log(this, "Siege started at " + locName + " — 3 defender groups spawned (" + baseFactionKey + ").");
+		JWK_Log.Log(this, string.Format(
+			"[Siege] Started at %1 -- %2 inv pts vs %3 def pts (%4).",
+			locName, siege.m_iInvaderPoints, siege.m_iDefenderPoints, baseFactionKey
+		));
 	}
 
 	protected void CaptureBaseForInvaders_S(IEntity base)
@@ -863,6 +909,50 @@ class BM_InvasionManager : GenericEntity
 				count += group.GetAgentsCount();
 		}
 		return count;
+	}
+
+	// Streaming-safe: counts group entities by position (works even when agents are unloaded)
+	protected int CountInvaderGroupsNear(vector pos, float range)
+	{
+		if (!m_InvaderForce) return 0;
+		float rangeSq = range * range;
+		int count = 0;
+		array<EntityID> groupIDs = m_InvaderForce.GetGroups();
+		foreach (EntityID groupID : groupIDs) {
+			SCR_AIGroup group = SCR_AIGroup.Cast(GetGame().GetWorld().FindEntityByID(groupID));
+			if (!group) continue;
+			if (vector.DistanceSqXZ(group.GetOrigin(), pos) < rangeSq)
+				count++;
+		}
+		return count;
+	}
+
+	// Routes invader groups near a lost base back to HQ and clears convoy state
+	protected void BM_RetreatInvadersFromBase_S(IEntity base)
+	{
+		string baseName = base.GetName();
+		if (m_sTargetBaseName == baseName) {
+			m_sTargetBaseName = "";
+			m_bConvoyEnRoute = false;
+		}
+
+		IEntity hq = GetHQ();
+		if (!hq || !m_InvaderForce) return;
+
+		vector retreatPos = hq.GetOrigin();
+		array<EntityID> groupIDs = m_InvaderForce.GetGroups();
+		foreach (EntityID groupID : groupIDs) {
+			SCR_AIGroup group = SCR_AIGroup.Cast(GetGame().GetWorld().FindEntityByID(groupID));
+			if (!group) continue;
+			if (vector.DistanceSqXZ(group.GetOrigin(), base.GetOrigin()) > SIEGE_DETECT_RANGE_SQ) continue;
+
+			array<AIWaypoint> wps = {};
+			group.GetWaypoints(wps);
+			foreach (AIWaypoint wp : wps) group.RemoveWaypoint(wp);
+			group.AddWaypoint(JWK.GetAIManager().SpawnWaypoint(JWK_EAIWaypoint.MOVE, retreatPos));
+		}
+
+		JWK_Log.Log(this, "[Siege] Invaders repelled from " + baseName + " -- routing groups back to HQ.");
 	}
 
 	protected BM_SiegeState FindSiegeForBase(EntityID baseID)
@@ -1179,14 +1269,15 @@ class BM_InvasionManager : GenericEntity
 				}
 			}
 		} else {
-			JWK_Log.Log(this, "No JWK_CombatFactionTrait found for " + GetFaction() + " — cannot generate vehicle composition.", LogLevel.WARNING);
+			JWK_Log.Log(this, "No JWK_CombatFactionTrait found for " + GetFaction() + " -- cannot generate vehicle composition.", LogLevel.WARNING);
 		}
 
 		// Fallback: if no vehicles spawned, send infantry instead
 		if (vehiclesSpawned == 0) {
-			JWK_Log.Log(this, "No vehicles spawned — falling back to infantry convoy.");
+			JWK_Log.Log(this, "No vehicles spawned -- falling back to infantry convoy.");
 			LaunchInfantryOnly_S(source, target);
 		}
+
 	}
 
 	protected void LaunchInfantryOnly_S(IEntity source, IEntity target)
