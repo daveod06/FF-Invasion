@@ -19,7 +19,7 @@ modded class JWK_GameModeSaveData
 	ref array<ref BM_PersistentAIGroupData> m_aBM_PersistedGroups;
 	ref array<string> m_aBM_CapturedBaseNames;
 
-	override bool SerializationSave(BaseSerializationSaveContext saveContext)
+	override bool SerializationSave(SaveContext saveContext)
 	{
 		BM_InvasionManager mgr = BM_InvasionManager.GetInstance();
 		if (mgr) {
@@ -89,7 +89,7 @@ modded class JWK_GameModeSaveData
 		return true;
 	}
 
-	override bool SerializationLoad(BaseSerializationLoadContext loadContext)
+	override bool SerializationLoad(LoadContext loadContext)
 	{
 		if (!super.SerializationLoad(loadContext)) return false;
 		loadContext.ReadValue("m_sBM_InvaderFaction", m_sBM_InvaderFaction);

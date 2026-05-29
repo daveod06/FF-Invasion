@@ -19,14 +19,14 @@ class BM_PersistentAIGroupData
 		m_vPosition = pos;
 	}
 
-	bool Read(BaseSerializationLoadContext ctx)
+	bool Read(LoadContext ctx)
 	{
 		ctx.ReadValue("m_pPrefab", m_pPrefab);
 		ctx.ReadValue("m_vPosition", m_vPosition);
 		return true;
 	}
 
-	bool Write(BaseSerializationSaveContext ctx)
+	bool Write(SaveContext ctx)
 	{
 		ctx.WriteValue("m_pPrefab", m_pPrefab);
 		ctx.WriteValue("m_vPosition", m_vPosition);
