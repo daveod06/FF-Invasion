@@ -70,12 +70,14 @@ class BM_InvasionManager : GenericEntity
 
 	// Siege system: AI-vs-AI base capture
 	protected ref array<ref BM_SiegeState> m_aSieges = {};
+	protected ref map<EntityID, float> m_mBaseRepelCooldowns = new map<EntityID, float>();
 	protected int m_iSiegeCheckCounter = 0;
 	static const int SIEGE_CHECK_INTERVAL = 5;    // every 10s (5 heartbeats * 2s)
 	static const float SIEGE_DETECT_RANGE = 200;
 	static const float SIEGE_DETECT_RANGE_SQ = 40000;
 	static const float SIEGE_GRACE_PERIOD_MS = 45000;  // 45s before checking outcome
 	static const float SIEGE_TIMEOUT_MS = 600000;      // 10 min -> virtual resolution if no player
+	static const float SIEGE_REPEL_COOLDOWN_MS = 300000; // 5 min after repel before new siege can start
 
 
 	// Ambient patrol system: 2 roaming infantry patrols for war ambiance (free, no tickets)
@@ -708,6 +710,12 @@ class BM_InvasionManager : GenericEntity
 			// Skip if siege already active at this base
 			if (FindSiegeForBase(baseID)) continue;
 
+			// Skip if base is in post-repel cooldown (invaders retreating, prevent immediate re-siege)
+			if (m_mBaseRepelCooldowns.Contains(baseID)) {
+				if (now < m_mBaseRepelCooldowns.Get(baseID)) continue;
+				m_mBaseRepelCooldowns.Remove(baseID);
+			}
+
 			// Check if invader groups are near this base (group entity position, streaming-safe)
 			if (CountInvaderGroupsNear(base.GetOrigin(), SIEGE_DETECT_RANGE) > 0) {
 				StartSiege_S(base);
@@ -783,6 +791,7 @@ class BM_InvasionManager : GenericEntity
 					JWK.GetNotifications().BroadcastNotification_S(ENotification.JWK_FREE_TEXT,
 						"UPDATE: Invader assault on " + locName + " repelled.");
 					BM_RetreatInvadersFromBase_S(base);
+					m_mBaseRepelCooldowns.Set(siege.m_BaseID, now + SIEGE_REPEL_COOLDOWN_MS);
 				}
 				m_aSieges.Remove(s);
 			}
